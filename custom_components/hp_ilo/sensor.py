@@ -185,7 +185,8 @@ class HpIloSensor(SensorEntity):
 
         if self._sensor_value_template is not None:
             ilo_data = self._sensor_value_template.render(
-                ilo_data=ilo_data, parse_result=False
+                ilo_data=ilo_data,
+                parse_result=True,
             )
 
         self._attr_native_value = ilo_data
@@ -373,6 +374,54 @@ async def async_setup_entry(
                     options=("ON","OFF"),
                     device_info=device_info
                 )
+
+            
+            elif sensor_type == "server_power_readings":
+                _LOGGER.info("Adding sensors for %s", sensor_type_name)
+
+                # present power
+                sensors.append(
+                    HpIloDeviceSensor(
+                        hass=hass,
+                        hp_ilo_data=hp_ilo_data,
+                        sensor_name=f"{sensor_type_name} (present)",
+                        sensor_type=sensor_type,
+                        sensor_value_template=template.Template(
+                            '{{ ilo_data["present_power_reading"][0] | float }}',
+                            hass=hass,
+                        ),
+                        unit_of_measurement="W",
+                        device_class=SensorDeviceClass.POWER,
+                        state_class=SensorStateClass.MEASUREMENT,
+                        entry=entry,
+                        device_info=device_info,
+                    )
+                )
+
+                # average / maximum / minimum
+                for label, key in (
+                    ("average", "average_power_reading"),
+                    ("maximum", "maximum_power_reading"),
+                    ("minimum", "minimum_power_reading"),
+                ):
+                    sensors.append(
+                        HpIloDeviceSensor(
+                            hass=hass,
+                            hp_ilo_data=hp_ilo_data,
+                            sensor_name=f"{sensor_type_name} ({label})",
+                            sensor_type=sensor_type,
+                            sensor_value_template=template.Template(
+                                f'{{{{ ilo_data["{key}"][0] | float }}}}',
+                                hass=hass,
+                            ),
+                            unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER,
+                            state_class=SensorStateClass.MEASUREMENT,
+                            entry=entry,
+                            device_info=device_info,
+                        )
+                    )
+
                 
                 sensors.append(new_sensor )
             elif sensor_type == "server_host_data":
