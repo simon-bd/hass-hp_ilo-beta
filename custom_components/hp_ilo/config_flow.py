@@ -10,7 +10,7 @@ import voluptuous as vol
 import hpilo 
 
 from homeassistant import config_entries, data_entry_flow
-from homeassistant.components import ssdp
+from homeassistant.helpers.service_info.ssdp import SsdpServiceInfo
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_NAME, CONF_TIMEOUT, CONF_TYPE, CONF_DESCRIPTION, ATTR_CONFIGURATION_URL, CONF_PORT, CONF_PROTOCOL, CONF_UNIQUE_ID, CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers import config_validation as cv
@@ -53,7 +53,7 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             "model": device.model,
             "host": device.host[0],
         }
-    async def async_step_ssdp(self, discovery_info: ssdp.SsdpServiceInfo) -> FlowResult:
+    async def async_step_ssdp(self, discovery_info: SsdpServiceInfo) -> FlowResult:
         """Handle a discovered HP iLO device."""
         _LOGGER.info(
                 "discovery_info : %s.",
