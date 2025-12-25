@@ -10,8 +10,7 @@ import voluptuous as vol
 import hpilo 
 
 from homeassistant import config_entries, data_entry_flow
-from homeassistant.helpers.service_info.ssdp import SsdpServiceInfo
-from homeassistant.components.ssdp import ATTR_UPNP_FRIENDLY_NAME, ATTR_UPNP_MODEL_NAME
+from homeassistant.components import ssdp
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_NAME, CONF_TIMEOUT, CONF_TYPE, CONF_DESCRIPTION, ATTR_CONFIGURATION_URL, CONF_PORT, CONF_PROTOCOL, CONF_UNIQUE_ID, CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers import config_validation as cv
@@ -54,7 +53,7 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             "model": device.model,
             "host": device.host[0],
         }
-        async def async_step_ssdp(self, discovery_info: SsdpServiceInfo) -> FlowResult:
+    async def async_step_ssdp(self, discovery_info: ssdp.SsdpServiceInfo) -> FlowResult:
         """Handle a discovered HP iLO device."""
         _LOGGER.info(
                 "discovery_info : %s.",
@@ -66,14 +65,14 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Not an HP-iLO server")
             return self.async_abort(reason="ssdp_server_error")
 
-    
+   
         parsed_url = urlparse(discovery_info.ssdp_location)
         self.config = {
             CONF_HOST: parsed_url.hostname,
             CONF_PORT: parsed_url.port, # TODO: FIX THIS, shoulnd't be 80 and HTTP 
             CONF_PROTOCOL: parsed_url.scheme ,
-            CONF_NAME: discovery_info.upnp[ATTR_UPNP_FRIENDLY_NAME],
-            CONF_DESCRIPTION: discovery_info.upnp[ATTR_UPNP_MODEL_NAME],
+            CONF_NAME: discovery_info.upnp[ssdp.ATTR_UPNP_FRIENDLY_NAME],
+            CONF_DESCRIPTION: discovery_info.upnp[ssdp.ATTR_UPNP_MODEL_NAME],
             CONF_UNIQUE_ID: discovery_info.ssdp_udn # TODO: This should be tagged as part of "Connections", but the actual device should be identified by it's serial number (after auth)
         }
         # we assume port 80 and same IP here. In theory this could also be inferred from a) using friendly name as a hostname or listening for  
