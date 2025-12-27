@@ -1,1 +1,18 @@
-pytest-homeassistant-custom-component==0.4.0
+# Test requirements aligned with manifest.json
+
+# Production dependencies (from manifest.json)
+python-hpilo==4.4.3
+
+# Testing framework
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-homeassistant-custom-component==0.13.106
+
+# Code quality
+flake8==6.1.0
+isort==5.13.2
+black==23.12.1
+mypy==1.7.1
+
+# Type stubs
+types-requests

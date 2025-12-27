@@ -24,7 +24,7 @@ from homeassistant.const import (
     CONF_PORT,
 )
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, format_mac
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.exceptions import ConfigEntryNotReady
 
@@ -53,10 +53,10 @@ class HpIloEnergySensor(RestoreSensor, CoordinatorEntity):
     
     _attr_has_entity_name = True
     
-    def __init__(self, coordinator, entry, device_info):
+    def __init__(self, coordinator, serial, device_info):
         """Initialize the energy sensor."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_energy_total"
+        self._attr_unique_id = f"{serial}_energy_total"
         self._attr_name = "Energy Usage"
         self._attr_device_info = device_info
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -153,15 +153,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
     if not coordinator.last_update_success:
         raise ConfigEntryNotReady(f"Unable to connect to iLO at {entry.data[CONF_HOST]}")
 
-    # --- 1. STICKY HARDWARE DISCOVERY ---
+    # --- 1. EXTRACT STABLE HARDWARE IDENTIFIERS ---
     data = coordinator.data
     host_data = data.get("host_data", [])
     
-    # Set fallback defaults
-    prod_name = "ProLiant"
-    serial = "Unknown"
-    uuid = "Unknown"
+    # Extract hardware identifiers - CRITICAL for stable unique IDs
+    serial = None
+    uuid = None
     mac_address = None
+    prod_name = "ProLiant"
     
     for item in host_data:
         if not isinstance(item, dict):
@@ -170,17 +170,33 @@ async def async_setup_entry(hass, entry, async_add_entities):
         if item.get("Product Name"):
             prod_name = item["Product Name"]
             
+        # Serial number is PRIMARY identifier
         found_serial = item.get("Serial Number") or item.get("Serial")
         if found_serial and found_serial != "Unknown":
             serial = found_serial
             
+        # UUID is SECONDARY identifier
         found_uuid = item.get("cUUID") or item.get("UUID")
-        if found_uuid:
+        if found_uuid and found_uuid != "Unknown":
             uuid = found_uuid
         
-        # Extract iLO MAC address
+        # Extract iLO MAC address (for device connections)
         if item.get("MAC") and item.get("Port") == "iLO":
-            mac_address = item["MAC"].replace("-", ":").lower()
+            mac_address = format_mac(item["MAC"])
+    
+    # Validate we have at least one stable identifier
+    if not serial and not uuid:
+        _LOGGER.error(
+            f"Cannot extract stable hardware identifier (serial or UUID) from {entry.data[CONF_HOST]}. "
+            "Entity unique IDs will not be stable across config entry changes."
+        )
+        # Fallback to entry_id only as last resort
+        hardware_id = entry.entry_id
+    else:
+        # Use serial as primary, UUID as fallback
+        hardware_id = serial or uuid
+    
+    _LOGGER.info(f"Using hardware identifier: {hardware_id} (serial={serial}, uuid={uuid})")
     
     # Extract hardware version (System ROM/BIOS)
     hw_version = None
@@ -189,16 +205,24 @@ async def async_setup_entry(hass, entry, async_add_entities):
         system_rom = firmware_info.get("System ROM")
         if system_rom:
             hw_version = system_rom.strip()
-    _LOGGER.debug(f"hw_version = {hw_version}")
-    _LOGGER.debug(f"firmware_info keys = {list(firmware_info.keys()) if firmware_info else 'None'}")
     
-    # Build connections
+    # Build connections - use formatted MAC
     connections = set()
     if mac_address:
         connections.add((CONNECTION_NETWORK_MAC, mac_address))
 
+    # --- 2. BUILD STABLE DEVICE INFO ---
+    # CRITICAL: Use hardware identifiers for device registry
+    device_identifiers = {(DOMAIN, hardware_id)}
+    
+    # Add additional identifiers for flexibility (helps with migration)
+    if serial and serial != hardware_id:
+        device_identifiers.add((DOMAIN, serial))
+    if uuid and uuid != hardware_id:
+        device_identifiers.add((DOMAIN, uuid))
+    
     device_info = DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id), (DOMAIN, serial), (DOMAIN, uuid)},
+        identifiers=device_identifiers,
         connections=connections if connections else None,
         name=prod_name,
         manufacturer="HPE",
@@ -211,16 +235,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entities = []
 
-    # --- 2. POWER STATE ---
+    # --- 3. POWER STATE ---
     entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
         key="power_state_master",
         name="Power State",
         device_class=SensorDeviceClass.ENUM,
         options=["ON", "OFF", "Unknown"],
         value_fn=lambda d: d.get("power_status", "Unknown"),
-    ), entry, device_info))
+    ), hardware_id, device_info))
 
-    # --- 3. FIRMWARE & LICENSE ---
+    # --- 4. FIRMWARE & LICENSE ---
     entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
         key="ilo_details",
         name="iLO System Details",
@@ -232,9 +256,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
             "system_rom": safe_get(d, "health", "firmware_information", "System ROM"),
             "uuid": uuid,
         }
-    ), entry, device_info))
+    ), hardware_id, device_info))
 
-    # --- 4. HEALTH SUMMARY ---
+    # --- 5. HEALTH SUMMARY ---
     health_glance = safe_get(data, "health", "health_at_a_glance")
     if health_glance:
         entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
@@ -246,9 +270,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 **{k: v.get("status") for k, v in safe_get(d, "health", "health_at_a_glance").items()},
                 "psu_redundancy": safe_get(d, "health", "health_at_a_glance", "power_supplies", "redundancy")
             }
-        ), entry, device_info))
+        ), hardware_id, device_info))
 
-    # --- 5. POWER ANALYSIS (Real-time Watts) ---
+    # --- 6. POWER ANALYSIS (Real-time Watts) ---
     pwr = safe_get(data, "power_readings")
     if pwr:
         entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
@@ -263,13 +287,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 "max": safe_get(d, "power_readings", "maximum_power_reading"),
                 "avg": safe_get(d, "power_readings", "average_power_reading"),
             }
-        ), entry, device_info))
+        ), hardware_id, device_info))
 
-    # --- 6. TEMPERATURES & FANS ---
+    # --- 7. TEMPERATURES & FANS ---
     temps = safe_get(data, "health", "temperature")
     if temps:
         for label, s_data in temps.items():
-            if s_data.get("status") == "Not Installed" or s_data.get("currentreading") == "N/A": continue
+            if s_data.get("status") == "Not Installed" or s_data.get("currentreading") == "N/A": 
+                continue
             entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
                 key=f"temp_{label}",
                 name=label,
@@ -277,12 +302,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 device_class=SensorDeviceClass.TEMPERATURE,
                 state_class=SensorStateClass.MEASUREMENT,
                 value_fn=lambda d, l=label: safe_get(d, "health", "temperature", l, "currentreading", 0)
-            ), entry, device_info))
+            ), hardware_id, device_info))
 
     fans = safe_get(data, "health", "fans")
     if fans:
         for label, s_data in fans.items():
-            if s_data.get("status") == "Not Installed": continue
+            if s_data.get("status") == "Not Installed": 
+                continue
             entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
                 key=f"fan_{label.lower().replace(' ', '_')}",
                 name=label,
@@ -290,10 +316,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 icon="mdi:fan",
                 state_class=SensorStateClass.MEASUREMENT,
                 value_fn=lambda d, l=label: safe_get(d, "health", "fans", l, "speed", 0),
-                attr_fn=lambda d, l=label: {"status": safe_get(d, "health", "fans", l, "status"), "zone": safe_get(d, "health", "fans", l, "zone")}
-            ), entry, device_info))
+                attr_fn=lambda d, l=label: {
+                    "status": safe_get(d, "health", "fans", l, "status"), 
+                    "zone": safe_get(d, "health", "fans", l, "zone")
+                }
+            ), hardware_id, device_info))
 
-    # --- 7. MEMORY ---
+    # --- 8. MEMORY ---
     mem_sum = safe_get(data, "health", "memory", "memory_details_summary", "cpu_1")
     if mem_sum:
         entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
@@ -306,9 +335,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 "sockets": safe_get(d, "health", "memory", "memory_details_summary", "cpu_1", "number_of_sockets"),
                 "frequency": safe_get(d, "health", "memory", "memory_details_summary", "cpu_1", "operating_frequency"),
             }
-        ), entry, device_info))
+        ), hardware_id, device_info))
 
-    # --- 8. NETWORK ---
+    # --- 9. NETWORK ---
     nic_ip = safe_get(data, "health", "nic_information", "Embedded", "ip_address")
     if nic_ip:
         entities.append(HpIloSensor(coordinator, HpIloSensorEntityDescription(
@@ -317,30 +346,24 @@ async def async_setup_entry(hass, entry, async_add_entities):
             icon="mdi:lan",
             value_fn=lambda d: "Connected",
             attr_fn=lambda d: safe_get(d, "health", "nic_information", "Embedded")
-        ), entry, device_info))
+        ), hardware_id, device_info))
 
-    # --- 9. ENERGY USAGE (For Energy Dashboard) ---
+    # --- 10. ENERGY USAGE (For Energy Dashboard) ---
     if safe_get(data, "power_readings", "present_power_reading") is not None:
-        entities.append(HpIloEnergySensor(coordinator, entry, device_info))
-
-    # --- 10. Hardware version ---
-    hw_version = None
-    firmware_info = safe_get(data, "firmware_information")
-    if firmware_info:
-        system_rom = firmware_info.get("System ROM")
-        if system_rom:
-            hw_version = system_rom.strip()
+        entities.append(HpIloEnergySensor(coordinator, hardware_id, device_info))
 
     async_add_entities(entities)
 
 class HpIloSensor(CoordinatorEntity, SensorEntity):
-    """Generic iLO Sensor."""
+    """Generic iLO Sensor with stable hardware-based unique IDs."""
     entity_description: HpIloSensorEntityDescription
 
-    def __init__(self, coordinator, description, entry, device_info):
+    def __init__(self, coordinator, description, hardware_id, device_info):
+        """Initialize sensor with hardware-based unique ID."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        # CRITICAL: Use hardware_id (serial/UUID) instead of entry_id
+        self._attr_unique_id = f"{hardware_id}_{description.key}"
         self._attr_device_info = device_info
 
     @property
@@ -348,12 +371,15 @@ class HpIloSensor(CoordinatorEntity, SensorEntity):
         try:
             val = self.entity_description.value_fn(self.coordinator.data)
             return val[0] if isinstance(val, tuple) else val
-        except Exception: return None
+        except Exception: 
+            return None
 
     @property
     def extra_state_attributes(self):
-        if not self.entity_description.attr_fn: return None
+        if not self.entity_description.attr_fn: 
+            return None
         try:
             attrs = self.entity_description.attr_fn(self.coordinator.data)
             return {k: (v[0] if isinstance(v, tuple) else v) for k, v in attrs.items() if v is not None}
-        except Exception: return None
+        except Exception: 
+            return None
