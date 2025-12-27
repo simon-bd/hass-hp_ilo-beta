@@ -64,9 +64,23 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             if result["success"]:
-                # Extract server name for a friendly title
-                server_name = result.get("server_name", host)
-                title = f"{server_name}" if server_name and server_name != host else f"HP iLO ({host})"
+                # Build a descriptive title with priority:
+                # 1. Product name (e.g., "ProLiant DL20 Gen9")
+                # 2. Server name if meaningful
+                # 3. Fallback to "iLO {host}"
+                product_name = result.get("product_name")
+                server_name = result.get("server_name")
+                
+                if product_name:
+                    # Use product name, optionally with server name
+                    if server_name and server_name.lower() not in [host.lower(), "localhost", "unknown"]:
+                        title = f"{product_name} ({server_name})"
+                    else:
+                        title = product_name
+                elif server_name and server_name.lower() not in [host.lower(), "localhost", "unknown"]:
+                    title = server_name
+                else:
+                    title = f"iLO {host}"
                 
                 return self.async_create_entry(
                     title=title,
@@ -138,8 +152,18 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             if result["success"]:
+                # Use discovered name or build from server name
+                server_name = result.get("server_name")
+                
+                if self._discovered_name and self._discovered_name != self._discovered_host:
+                    title = self._discovered_name
+                elif server_name and server_name.lower() not in [self._discovered_host.lower(), "localhost", "unknown"]:
+                    title = server_name
+                else:
+                    title = f"iLO {self._discovered_host}"
+                
                 return self.async_create_entry(
-                    title=self._discovered_name or self._discovered_host,
+                    title=title,
                     data={
                         CONF_HOST: self._discovered_host,
                         CONF_USERNAME: user_input[CONF_USERNAME],
@@ -176,6 +200,7 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 - success: bool indicating if connection succeeded
                 - error: str error code if failed (None if success)
                 - server_name: str server name if connection succeeded
+                - product_name: str hardware model if available
         """
         try:
             # Auto-correct port 80 to 443 (RIBCL requires SSL)
@@ -184,13 +209,25 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 
             ilo = hpilo.Ilo(host, user, password, port=port)
             
-            # Attempt to get server name to verify connection
+            # Get server name and try to get product name
             server_name = ilo.get_server_name()
+            product_name = None
+            
+            try:
+                # Try to get hardware model for better naming
+                host_data = ilo.get_host_data()
+                for item in host_data:
+                    if isinstance(item, dict) and item.get("Product Name"):
+                        product_name = item["Product Name"]
+                        break
+            except Exception:
+                pass  # Product name is optional
             
             return {
                 "success": True,
                 "error": None,
                 "server_name": server_name,
+                "product_name": product_name,
             }
             
         except hpilo.IloLoginFailed as err:
@@ -199,6 +236,7 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 "success": False,
                 "error": "invalid_auth",
                 "server_name": None,
+                "product_name": None,
             }
             
         except hpilo.IloCommunicationError as err:
@@ -207,6 +245,7 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 "success": False,
                 "error": "cannot_connect",
                 "server_name": None,
+                "product_name": None,
             }
             
         except hpilo.IloError as err:
@@ -215,6 +254,7 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 "success": False,
                 "error": "unknown",
                 "server_name": None,
+                "product_name": None,
             }
             
         except Exception as err:
@@ -223,4 +263,5 @@ class HpIloFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 "success": False,
                 "error": "unknown",
                 "server_name": None,
+                "product_name": None,
             }
