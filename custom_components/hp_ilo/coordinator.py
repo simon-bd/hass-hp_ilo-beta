@@ -106,12 +106,8 @@ class HpIloCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Lazy initialization of iLO connection
         if not self.ilo:
             try:
-                self.ilo = hpilo.Ilo(
-                    hostname=self.host,
-                    login=self.login,
-                    password=self.password,
-                    port=self.port,
-                )
+                # Use positional args to match python-hpilo constructor used elsewhere
+                self.ilo = hpilo.Ilo(self.host, self.login, self.password, port=self.port)
             except Exception as err:
                 raise UpdateFailed(
                     f"Failed to initialize iLO connection to {self.host}:{self.port}: {err}"

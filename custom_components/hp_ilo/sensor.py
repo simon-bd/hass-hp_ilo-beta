@@ -139,19 +139,11 @@ class HpIloEnergySensor(RestoreSensor, CoordinatorEntity):
         self.async_write_ha_state()
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up sensors based on dynamic model."""
-    coordinator = HpIloCoordinator(
-        hass,
-        entry.data[CONF_HOST],
-        entry.data[CONF_USERNAME],
-        entry.data[CONF_PASSWORD],
-        entry.data.get(CONF_PORT, DEFAULT_PORT),
-    )
+    """Set up sensors based on dynamic model using stored coordinator."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
 
-    await coordinator.async_config_entry_first_refresh()
-
-    if not coordinator.last_update_success:
-        raise ConfigEntryNotReady(f"Unable to connect to iLO at {entry.data[CONF_HOST]}")
+    if coordinator is None:
+        raise ConfigEntryNotReady(f"Coordinator not initialized for {entry.entry_id}")
 
     # --- 1. EXTRACT STABLE HARDWARE IDENTIFIERS ---
     data = coordinator.data
